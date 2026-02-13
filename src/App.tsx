@@ -16,6 +16,7 @@ import {
   sampleTerrainMostDetailed,
   GeoJsonDataSource,
   ColorMaterialProperty,
+  PolylineGlowMaterialProperty,
 } from "cesium";
 
 import "./App.css";
@@ -112,14 +113,6 @@ export default function App() {
   }, [mode, ecoMetric]);
 
 
-  const getColorFromMetric = (value: number) => {
-    const v = Math.max(0, Math.min(1, value));
-
-    if (v < 0.4) return Color.LIME.withAlpha(0.6);
-    if (v < 0.7) return Color.YELLOW.withAlpha(0.6);
-    return Color.RED.withAlpha(0.6);
-  };
-
   const loadEcoGeoJSON = async () => {
     const viewer = viewerRef.current;
     if (!viewer) return;
@@ -130,36 +123,103 @@ export default function App() {
 
     const dataSource = await GeoJsonDataSource.load(
       "/data/oskemen_for_cesium_opt.geojson",
-      { clampToGround: false }
+      { clampToGround: true }
     );
 
     ecoDataSourceRef.current = dataSource;
     viewer.dataSources.add(dataSource);
 
-    dataSource.entities.values.forEach((entity) => {
-      if (!entity.polygon) return;
+    const entities = dataSource.entities.values;
 
+    entities.forEach((entity) => {
       const props = entity.properties?.getValue();
 
       const air = props?.air_index ?? 0;
       const traffic = props?.traffic_index ?? 0;
-      const renderHeight = props?.render_height ?? 10;
 
-      const value =
-        ecoMetric === "air"
-          ? air * 10
-          : traffic * 10;
+      // --- AIR QUALITY MODE ---
+      if (ecoMetric === "air" && entity.polygon) {
+        const color = getAirColor(air);
 
-      entity.polygon.material =
-        new ColorMaterialProperty(
-          getColorFromMetric(value)
-        );
+        entity.polygon.material = new ColorMaterialProperty(color);
+        entity.polygon.outline = false;
+        entity.polygon.height = 0;
+        entity.polygon.extrudedHeight = 0;
+      }
 
-      entity.polygon.outline = false;
-      entity.polygon.height = 0;
-      entity.polygon.extrudedHeight = renderHeight;
+      // --- TRAFFIC MODE ---
+      if (ecoMetric === "traffic") {
+        // если есть геометрия линии — делаем дорогу
+        if (entity.polyline) {
+          const { color, width } = getTrafficStyle(traffic);
+
+          entity.polyline.material = new PolylineGlowMaterialProperty({
+            glowPower: 0.2,
+            color: color,
+          });
+          entity.polyline.width = width;
+          entity.polyline.clampToGround = true;
+        }
+
+        // если в geojson дороги как полигоны — конвертим их
+        if (entity.polygon) {
+          const hierarchy = entity.polygon.hierarchy?.getValue();
+          if (!hierarchy) return;
+
+          const { color, width } = getTrafficStyle(traffic);
+
+          viewer.entities.add({
+            polyline: {
+              positions: hierarchy.positions,
+              width: width,
+              material: new PolylineGlowMaterialProperty({
+                glowPower: 0.2,
+                color: color,
+              }),
+              clampToGround: true,
+            },
+          });
+
+          viewer.entities.remove(entity);
+        }
+      }
     });
 
+    setStats((s) => ({ ...s, ecoZones: entities.length }));
+  };
+
+  const getAirColor = (value: number) => {
+    const v = Math.max(0, Math.min(1, value));
+
+    if (v < 0.2) return Color.fromCssColorString("#22c55e").withAlpha(0.15);
+    if (v < 0.4) return Color.fromCssColorString("#84cc16").withAlpha(0.2);
+    if (v < 0.6) return Color.fromCssColorString("#eab308").withAlpha(0.25);
+    if (v < 0.8) return Color.fromCssColorString("#f97316").withAlpha(0.3);
+
+    return Color.fromCssColorString("#ef4444").withAlpha(0.35);
+  };
+
+  const getTrafficStyle = (value: number) => {
+    const v = Math.max(0, Math.min(1, value));
+
+    let color;
+    let width;
+
+    if (v < 0.3) {
+      color = Color.LIME;
+      width = 2;
+    } else if (v < 0.6) {
+      color = Color.YELLOW;
+      width = 4;
+    } else if (v < 0.8) {
+      color = Color.ORANGE;
+      width = 6;
+    } else {
+      color = Color.RED;
+      width = 8;
+    }
+
+    return { color, width };
   };
 
 
@@ -178,6 +238,31 @@ export default function App() {
     });
 
     viewerRef.current = viewer;
+
+    viewer.camera.moveEnd.addEventListener(() => {
+      const rect = viewer.camera.computeViewRectangle();
+      if (!rect) return;
+
+      const west = CesiumMath.toDegrees(rect.west);
+      const east = CesiumMath.toDegrees(rect.east);
+      const south = CesiumMath.toDegrees(rect.south);
+      const north = CesiumMath.toDegrees(rect.north);
+
+      ecoDataSourceRef.current?.entities.values.forEach((entity) => {
+        // Note: Generic entities from GeoJSON (polygons/lines) might not have a .position.
+        // If we want to support them, we'd need to check their geometry or set a property.
+        const pos = entity.position?.getValue(viewer.clock.currentTime);
+        if (!pos) return;
+
+        const cart = Cartographic.fromCartesian(pos);
+        const lon = CesiumMath.toDegrees(cart.longitude);
+        const lat = CesiumMath.toDegrees(cart.latitude);
+
+        entity.show =
+          lon > west && lon < east && lat > south && lat < north;
+      });
+    });
+
     viewer.scene.globe.depthTestAgainstTerrain = true;
 
     CesiumTerrainProvider.fromIonAssetId(1).then((terrain) => {
@@ -328,10 +413,40 @@ export default function App() {
   }, [pitch, heading, height]);
 
   const clearAll = () => {
-    viewerRef.current?.entities.removeAll();
-    setStats({ buildings: 0, ecoZones: 0 });
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+
+    // удалить все пользовательские entities (здания, дороги и т.д.)
+    viewer.entities.removeAll();
+
+    // удалить GeoJSON из сцены и памяти
+    if (ecoDataSourceRef.current) {
+      viewer.dataSources.remove(ecoDataSourceRef.current, true);
+      // true = destroy => удаляет из памяти
+      ecoDataSourceRef.current = null;
+    }
+
+    // вернуть режим
     setMode("none");
+
+    // сбросить статистику
+    setStats({ buildings: 0, ecoZones: 0 });
+
+    // вернуть камеру к старту города
+    viewer.camera.setView({
+      destination: Cartesian3.fromDegrees(
+        cityCoords.lon,
+        cityCoords.lat,
+        2000
+      ),
+      orientation: {
+        heading: CesiumMath.toRadians(0),
+        pitch: CesiumMath.toRadians(-30),
+        roll: 0,
+      },
+    });
   };
+
 
   const toggleBuildings = () => {
     if (!tilesetRef.current) return;
