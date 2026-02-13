@@ -24,6 +24,8 @@ import { LeftSidebar } from "./components/LeftSidebar";
 import RightSidebar from "./components/RightSidebar";
 import "cesium/Build/Cesium/Widgets/widgets.css";
 
+import { ConstantProperty } from "cesium";
+
 Ion.defaultAccessToken = import.meta.env.VITE_CESIUM_ION_ACCESS_TOKEN;
 
 type Mode = "none" | "build" | "eco";
@@ -82,7 +84,7 @@ export default function App() {
     uploadedFile: null,
   });
 
-
+  const [ecoMetric, setEcoMetric] = useState<"air" | "traffic">("air");
   const ecoDataSourceRef = useRef<GeoJsonDataSource | null>(null);
 
 
@@ -120,7 +122,7 @@ export default function App() {
       tileset.style = new Cesium3DTileStyle({
         color: {
           conditions: [
-            ["true", "color('#1f2937', 0.9)"], // Neutral dark grey for Eco Mode
+            ["true", "color('#1f2937', 0.7)"], // Neutral dark grey for Eco Mode
           ],
         },
       });
@@ -159,54 +161,62 @@ export default function App() {
 
     entities.forEach((entity) => {
       const props = entity.properties?.getValue();
+      const type = props?.type;
 
       const air = props?.air_index ?? 0;
       const traffic = props?.traffic_index ?? 0;
 
-      // --- RENDER AIR QUALITY (POLYGONS) ---
-      if (entity.polygon) {
+      // --- AIR ZONES ---
+      if (type === "air" && entity.polygon) {
         const color = getAirColor(air);
+
         entity.polygon.material = new ColorMaterialProperty(color);
-        entity.polygon.outline = false;
-        entity.polygon.height = 0;
-        entity.polygon.extrudedHeight = 0;
+        entity.polygon.outline = new ConstantProperty(false);
+        entity.polygon.height = new ConstantProperty(0);
+        entity.polygon.extrudedHeight = new ConstantProperty(0);
       }
 
-      // --- RENDER TRAFFIC (LINES) ---
-      // If the entity is already a polyline, style it
-      if (entity.polyline) {
-        const { color, width } = getTrafficStyle(traffic);
-        entity.polyline.material = new PolylineGlowMaterialProperty({
-          glowPower: 0.2,
-          color: color,
-        });
-        entity.polyline.width = width;
-        entity.polyline.clampToGround = true;
-      }
 
-      // If it's a "road" polygon, convert to polyline but don't remove the original AIR polygon
-      // Wait, if it's a polygon, it might be an air zone OR a road polygon.
-      // Usually, roads in GeoJSON are LineStrings. If they are polygons, we treat them as air zones.
-      // But according to the user's previous code, they were converting polygons to polylines.
-      // I will keep the polygon as an air zone and ADD a polyline on top if it has traffic data.
-      if (entity.polygon) {
-        const hierarchy = entity.polygon.hierarchy?.getValue();
-        if (hierarchy && traffic > 0) {
+      // --- ROADS AS LINES ---
+      if (type === "road") {
+        // If already polyline
+        if (entity.polyline) {
           const { color, width } = getTrafficStyle(traffic);
-          viewer.entities.add({
-            polyline: {
-              positions: hierarchy.positions,
-              width: width,
-              material: new PolylineGlowMaterialProperty({
-                glowPower: 0.2,
-                color: color,
-              }),
-              clampToGround: true,
-            },
+
+          entity.polyline.material = new PolylineGlowMaterialProperty({
+            glowPower: 0.2,
+            color: color,
           });
+
+          entity.polyline.width = new ConstantProperty(width);
+          entity.polyline.clampToGround = new ConstantProperty(true);
+        }
+
+        // If road is polygon → convert to line
+        if (entity.polygon) {
+          const hierarchy = entity.polygon.hierarchy?.getValue();
+          if (hierarchy) {
+            const { color, width } = getTrafficStyle(traffic);
+
+            viewer.entities.add({
+              polyline: {
+                positions: hierarchy.positions,
+                width: width,
+                material: new PolylineGlowMaterialProperty({
+                  glowPower: 0.2,
+                  color: color,
+                }),
+                clampToGround: true,
+              },
+            });
+
+            // hide polygon
+            entity.polygon.show = new ConstantProperty(false);
+          }
         }
       }
     });
+
 
     setStats((s) => ({ ...s, ecoZones: entities.length }));
   };
@@ -493,6 +503,8 @@ export default function App() {
         totalHeight={totalHeight}
         area={area}
         volume={volume}
+        ecoMetric={ecoMetric}
+        setEcoMetric={setEcoMetric}
       />
 
 
