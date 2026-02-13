@@ -82,7 +82,7 @@ export default function App() {
     uploadedFile: null,
   });
 
-  const [ecoMetric, setEcoMetric] = useState<"air" | "traffic">("air");
+
   const ecoDataSourceRef = useRef<GeoJsonDataSource | null>(null);
 
 
@@ -110,7 +110,33 @@ export default function App() {
         ecoDataSourceRef.current = null;
       }
     }
-  }, [mode, ecoMetric]);
+  }, [mode]);
+
+  useEffect(() => {
+    const tileset = tilesetRef.current;
+    if (!tileset) return;
+
+    if (mode === "eco") {
+      tileset.style = new Cesium3DTileStyle({
+        color: {
+          conditions: [
+            ["true", "color('#1f2937', 0.9)"], // Neutral dark grey for Eco Mode
+          ],
+        },
+      });
+    } else {
+      tileset.style = new Cesium3DTileStyle({
+        color: {
+          conditions: [
+            ["${feature['building']} === 'apartments'", "color('#eab308',0.9)"],
+            ["${feature['building']} === 'commercial'", "color('#60a5fa',0.9)"],
+            ["Number(${feature['building:levels']}) >= 10", "color('#ef4444',0.9)"],
+            ["true", "color('#e5e7eb',0.9)"],
+          ],
+        },
+      });
+    }
+  }, [mode]);
 
 
   const loadEcoGeoJSON = async () => {
@@ -137,37 +163,36 @@ export default function App() {
       const air = props?.air_index ?? 0;
       const traffic = props?.traffic_index ?? 0;
 
-      // --- AIR QUALITY MODE ---
-      if (ecoMetric === "air" && entity.polygon) {
+      // --- RENDER AIR QUALITY (POLYGONS) ---
+      if (entity.polygon) {
         const color = getAirColor(air);
-
         entity.polygon.material = new ColorMaterialProperty(color);
         entity.polygon.outline = false;
         entity.polygon.height = 0;
         entity.polygon.extrudedHeight = 0;
       }
 
-      // --- TRAFFIC MODE ---
-      if (ecoMetric === "traffic") {
-        // если есть геометрия линии — делаем дорогу
-        if (entity.polyline) {
+      // --- RENDER TRAFFIC (LINES) ---
+      // If the entity is already a polyline, style it
+      if (entity.polyline) {
+        const { color, width } = getTrafficStyle(traffic);
+        entity.polyline.material = new PolylineGlowMaterialProperty({
+          glowPower: 0.2,
+          color: color,
+        });
+        entity.polyline.width = width;
+        entity.polyline.clampToGround = true;
+      }
+
+      // If it's a "road" polygon, convert to polyline but don't remove the original AIR polygon
+      // Wait, if it's a polygon, it might be an air zone OR a road polygon.
+      // Usually, roads in GeoJSON are LineStrings. If they are polygons, we treat them as air zones.
+      // But according to the user's previous code, they were converting polygons to polylines.
+      // I will keep the polygon as an air zone and ADD a polyline on top if it has traffic data.
+      if (entity.polygon) {
+        const hierarchy = entity.polygon.hierarchy?.getValue();
+        if (hierarchy && traffic > 0) {
           const { color, width } = getTrafficStyle(traffic);
-
-          entity.polyline.material = new PolylineGlowMaterialProperty({
-            glowPower: 0.2,
-            color: color,
-          });
-          entity.polyline.width = width;
-          entity.polyline.clampToGround = true;
-        }
-
-        // если в geojson дороги как полигоны — конвертим их
-        if (entity.polygon) {
-          const hierarchy = entity.polygon.hierarchy?.getValue();
-          if (!hierarchy) return;
-
-          const { color, width } = getTrafficStyle(traffic);
-
           viewer.entities.add({
             polyline: {
               positions: hierarchy.positions,
@@ -179,8 +204,6 @@ export default function App() {
               clampToGround: true,
             },
           });
-
-          viewer.entities.remove(entity);
         }
       }
     });
@@ -394,6 +417,7 @@ export default function App() {
     };
   }, []);
 
+
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer) return;
@@ -469,8 +493,6 @@ export default function App() {
         totalHeight={totalHeight}
         area={area}
         volume={volume}
-        ecoMetric={ecoMetric}
-        setEcoMetric={setEcoMetric}
       />
 
 

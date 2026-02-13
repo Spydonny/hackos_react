@@ -30,8 +30,6 @@ type Props = {
     totalHeight: number;
     area: number;
     volume: number;
-    ecoMetric: "air" | "traffic";
-    setEcoMetric: (v: "air" | "traffic") => void;
 };
 
 export function LeftSidebar({
@@ -44,8 +42,6 @@ export function LeftSidebar({
     totalHeight,
     area,
     volume,
-    ecoMetric,
-    setEcoMetric
 }: Props) {
     const update = (field: keyof BuildingConfig, value: any) => {
         setBuildingConfig({
@@ -227,27 +223,7 @@ export function LeftSidebar({
                 Eco Zones
             </button>
 
-            {mode === "eco" && (
-                <div className="eco-toggle">
-                    <label>Metric</label>
 
-                    <div className="toggle-group">
-                        <button
-                            className={ecoMetric === "air" ? "active" : ""}
-                            onClick={() => setEcoMetric("air")}
-                        >
-                            Air Quality
-                        </button>
-
-                        <button
-                            className={ecoMetric === "traffic" ? "active" : ""}
-                            onClick={() => setEcoMetric("traffic")}
-                        >
-                            Traffic
-                        </button>
-                    </div>
-                </div>
-            )}
 
 
             <button className="btn ghost" onClick={clearAll}>
