@@ -25,27 +25,14 @@ import RightSidebar from "./components/RightSidebar";
 import "cesium/Build/Cesium/Widgets/widgets.css";
 
 import { ConstantProperty } from "cesium";
+import type { BuildingConfig } from "./types/building";
+import { placeBuilding } from "./api/buildingApi";
+import type { PlaceBuildingResponse } from "./api/buildingApi";
+import type { Entity } from "cesium";
 
 Ion.defaultAccessToken = import.meta.env.VITE_CESIUM_ION_ACCESS_TOKEN;
 
 type Mode = "none" | "build" | "eco";
-type BuildingType = "residential" | "commercial" | "industrial" | "office";
-type BuildingMaterial = "concrete" | "glass" | "brick" | "steel";
-
-type BuildingConfig = {
-  type: BuildingType;
-  width: number;
-  length: number;
-  floors: number;
-  floorHeight: number;
-  material: BuildingMaterial;
-  color: string;
-  windowDensity: number;
-  greenRoof: boolean;
-  solarPanels: boolean;
-  nightLights: boolean;
-  uploadedFile: File | null;
-};
 
 const cityCoords = { lon: 82.614, lat: 49.948 };
 
@@ -57,6 +44,16 @@ export default function App() {
   const modeRef = useRef<Mode>("none");
   const buildingConfigRef = useRef<BuildingConfig | null>(null);
 
+  // Template selection state — lifted from LeftSidebar
+  const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null);
+  const selectedTemplateIdRef = useRef<number | null>(null);
+
+  // Ghost building preview entity
+  const ghostEntityRef = useRef<Entity | null>(null);
+
+  // Result of the last building placement
+  const [placementResult, setPlacementResult] = useState<PlaceBuildingResponse | null>(null);
+
   const [mode, setMode] = useState<Mode>("none");
   const [pitch, setPitch] = useState(-30);
   const [heading, setHeading] = useState(0);
@@ -67,7 +64,7 @@ export default function App() {
     ecoZones: 0,
   });
 
-  const [buildingsVisible, setBuildingsVisible] = useState(true);
+  const [, setBuildingsVisible] = useState(true);
 
   const [buildingConfig, setBuildingConfig] = useState<BuildingConfig>({
     type: "residential",
@@ -76,7 +73,7 @@ export default function App() {
     floors: 5,
     floorHeight: 3,
     material: "concrete",
-    color: "#f97316",
+    color: "#804115ff",
     windowDensity: 50,
     greenRoof: false,
     solarPanels: false,
@@ -95,6 +92,10 @@ export default function App() {
   useEffect(() => {
     buildingConfigRef.current = buildingConfig;
   }, [buildingConfig]);
+
+  useEffect(() => {
+    selectedTemplateIdRef.current = selectedTemplateId;
+  }, [selectedTemplateId]);
 
   const totalHeight = buildingConfig.floors * buildingConfig.floorHeight;
   const area = buildingConfig.width * buildingConfig.length;
@@ -333,7 +334,7 @@ export default function App() {
 
     const handler = new ScreenSpaceEventHandler(viewer.scene.canvas);
 
-    handler.setInputAction((movement) => {
+    handler.setInputAction((movement: any) => {
       if (modeRef.current === "none") return;
 
       const ray = viewer.camera.getPickRay(movement.position);
@@ -351,6 +352,7 @@ export default function App() {
 
         if (modeRef.current === "build") {
           const config = buildingConfigRef.current;
+          const templateId = selectedTemplateIdRef.current;
           if (!config) return;
 
           const {
@@ -382,6 +384,7 @@ export default function App() {
           const shiftLon = 0.00004;
           const shiftLat = -0.00002;
 
+          // --- Optimistic UI: draw building immediately ---
           viewer.entities.add({
             polygon: {
               hierarchy: Cartesian3.fromDegreesArray([
@@ -415,11 +418,93 @@ export default function App() {
             });
           }
 
+          // --- Remove ghost preview after placing ---
+          if (ghostEntityRef.current) {
+            viewer.entities.remove(ghostEntityRef.current);
+            ghostEntityRef.current = null;
+          }
+
+          // --- Send to backend ---
+          const payload = {
+            lat,
+            lng: lon,
+            template_id: templateId,
+            type: config.type,
+            width,
+            length,
+            floors,
+            floor_height: floorHeight,
+          };
+
+          placeBuilding(payload)
+            .then((data) => {
+              console.log("Building placed:", data);
+              // Use analysis data if nested, otherwise use top-level
+              const result = data.analysis || data;
+              setPlacementResult(result);
+            })
+            .catch((err) => console.error("Place building error:", err));
+
           setStats((s) => ({ ...s, buildings: s.buildings + 1 }));
         }
 
       });
     }, ScreenSpaceEventType.LEFT_CLICK);
+
+    // --- Ghost building preview on MOUSE_MOVE ---
+    handler.setInputAction((movement: any) => {
+      if (modeRef.current !== "build") {
+        // Remove ghost when not in build mode
+        if (ghostEntityRef.current) {
+          viewer.entities.remove(ghostEntityRef.current);
+          ghostEntityRef.current = null;
+        }
+        return;
+      }
+
+      const config = buildingConfigRef.current;
+      if (!config) return;
+
+      const ray = viewer.camera.getPickRay(movement.endPosition);
+      if (!ray) return;
+      const cartesian = viewer.scene.globe.pick(ray, viewer.scene);
+      if (!defined(cartesian)) return;
+
+      const cartographic = Cartographic.fromCartesian(cartesian);
+      const gLon = CesiumMath.toDegrees(cartographic.longitude);
+      const gLat = CesiumMath.toDegrees(cartographic.latitude);
+      const gHeight = cartographic.height ?? 0;
+
+      const { width, length, floors, floorHeight, color } = config;
+      const heightTotal = floors * floorHeight;
+      const shiftLon = 0.00004;
+      const shiftLat = -0.00002;
+
+      // Remove old ghost
+      if (ghostEntityRef.current) {
+        viewer.entities.remove(ghostEntityRef.current);
+      }
+
+      const ghostColor = Color.fromCssColorString(color).withAlpha(0.3);
+
+      ghostEntityRef.current = viewer.entities.add({
+        polygon: {
+          hierarchy: Cartesian3.fromDegreesArray([
+            gLon - width * 0.000005 + shiftLon,
+            gLat - length * 0.000005 + shiftLat,
+            gLon + width * 0.000005 + shiftLon,
+            gLat - length * 0.000005 + shiftLat,
+            gLon + width * 0.000005 + shiftLon,
+            gLat + length * 0.000005 + shiftLat,
+            gLon - width * 0.000005 + shiftLon,
+            gLat + length * 0.000005 + shiftLat,
+          ]),
+          height: gHeight,
+          extrudedHeight: gHeight + heightTotal,
+          material: ghostColor,
+        },
+      });
+    }, ScreenSpaceEventType.MOUSE_MOVE);
 
     return () => {
       handler.destroy();
@@ -505,8 +590,46 @@ export default function App() {
         volume={volume}
         ecoMetric={ecoMetric}
         setEcoMetric={setEcoMetric}
+        selectedTemplateId={selectedTemplateId}
+        setSelectedTemplateId={setSelectedTemplateId}
       />
 
+      {placementResult && (
+        <div className="placement-result-card">
+          <div className="result-header">
+            <h3>Construction Report</h3>
+            <button onClick={() => setPlacementResult(null)}>×</button>
+          </div>
+          <div className="result-content">
+            <div className="result-item">
+              <span className="label">District:</span>
+              <span className="value">
+                {placementResult.district_name || "N/A"}
+              </span>
+            </div>
+            <div className="result-item">
+              <span className="label">Eco Status:</span>
+              <span className="value status-highlight">
+                {placementResult.eco_status || "Unknown"}
+              </span>
+            </div>
+            <div className="result-item">
+              <span className="label">Energy Impact:</span>
+              <span className="value">{placementResult.energy_impact ?? 0}</span>
+            </div>
+            {placementResult.alerts && placementResult.alerts.length > 0 && (
+              <div className="result-alerts">
+                <strong>Alerts:</strong>
+                <ul>
+                  {placementResult.alerts.map((a, i) => (
+                    <li key={i}>{a}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="viewer" ref={cesiumRef} />
 

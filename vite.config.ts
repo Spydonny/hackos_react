@@ -5,6 +5,19 @@ import cesium from "vite-plugin-cesium";
 export default defineConfig({
   plugins: [react(), cesium()],
 
+  server: {
+    proxy: {
+      "/api": {
+        target: "https://erp-osk.vercel.app",
+        changeOrigin: true,
+      },
+      "/analyze": {
+        target: "https://erp-osk.vercel.app",
+        changeOrigin: true,
+      },
+    },
+  },
+
   optimizeDeps: {
     include: ["cesium", "mersenne-twister"],
   },

@@ -1,24 +1,8 @@
-import { Building2, Leaf, Trash2, Upload, FileText, X } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Building2, Leaf, Trash2, Upload, FileText, X, Save, Search, Loader2 } from "lucide-react";
 import StatsCard from "./StatsCard";
-
-type BuildingType = "residential" | "commercial" | "industrial" | "office";
-type BuildingMaterial = "concrete" | "glass" | "brick" | "steel";
-
-type BuildingConfig = {
-    type: BuildingType;
-    width: number;
-    length: number;
-    floors: number;
-    floorHeight: number;
-    material: BuildingMaterial;
-    color: string;
-    windowDensity: number;
-    greenRoof: boolean;
-    solarPanels: boolean;
-    nightLights: boolean;
-    uploadedFile: File | null;
-
-};
+import type { BuildingConfig, BuildingTemplate } from "../types/building";
+import { fetchTemplates, createTemplate, analyzeDocument } from "../api/buildingApi";
 
 type Props = {
     mode: string;
@@ -32,6 +16,8 @@ type Props = {
     volume: number;
     ecoMetric: "air" | "traffic";
     setEcoMetric: (v: "air" | "traffic") => void;
+    selectedTemplateId: number | null;
+    setSelectedTemplateId: (id: number | null) => void;
 };
 
 export function LeftSidebar({
@@ -45,13 +31,101 @@ export function LeftSidebar({
     area,
     volume,
     ecoMetric,
-    setEcoMetric
+    setEcoMetric,
+    selectedTemplateId,
+    setSelectedTemplateId,
 }: Props) {
+    // ---- Template browser state ----
+    const [templates, setTemplates] = useState<BuildingTemplate[]>([]);
+    const [templatesLoading, setTemplatesLoading] = useState(false);
+    const [templatesError, setTemplatesError] = useState<string | null>(null);
+    // selectedTemplateId is now managed by App via props
+
+    // ---- Save template state ----
+    const [saveName, setSaveName] = useState("");
+    const [saving, setSaving] = useState(false);
+    const [saveMsg, setSaveMsg] = useState<string | null>(null);
+
+    // ---- Analyze document state ----
+    const [analyzing, setAnalyzing] = useState(false);
+    const [verdict, setVerdict] = useState<string | null>(null);
+    const [analyzeError, setAnalyzeError] = useState<string | null>(null);
+
     const update = (field: keyof BuildingConfig, value: any) => {
         setBuildingConfig({
             ...buildingConfig,
             [field]: value,
         });
+    };
+
+    // Fetch templates when build mode is activated
+    useEffect(() => {
+        if (mode === "build") {
+            loadTemplates();
+        }
+    }, [mode]);
+
+    const loadTemplates = async () => {
+        setTemplatesLoading(true);
+        setTemplatesError(null);
+        try {
+            const data = await fetchTemplates();
+            setTemplates(data);
+        } catch (err: any) {
+            setTemplatesError(err.message ?? "Failed to load templates");
+        } finally {
+            setTemplatesLoading(false);
+        }
+    };
+
+    // Apply a template to the building config form
+    const applyTemplate = (tpl: BuildingTemplate) => {
+        setSelectedTemplateId(tpl.id);
+        setBuildingConfig({
+            ...buildingConfig,
+            type: (tpl.type as BuildingConfig["type"]) || "residential",
+        });
+        setMode("build"); // Auto-activate build mode
+    };
+
+    // Save current config as a new template
+    const handleSave = async () => {
+        if (!saveName.trim()) return;
+        setSaving(true);
+        setSaveMsg(null);
+        try {
+            await createTemplate({
+                name: saveName.trim(),
+                type: buildingConfig.type,
+                capacity: 0,
+                cost: 0,
+                energy: buildingConfig.floors * buildingConfig.floorHeight * 1.5,
+                eco: buildingConfig.greenRoof ? 0.2 : 0.6,
+            });
+            setSaveMsg("Template saved!");
+            setSaveName("");
+            loadTemplates(); // refresh list
+        } catch (err: any) {
+            setSaveMsg(`Error: ${err.message}`);
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    // Analyze the uploaded file via Gemini
+    const handleAnalyze = async () => {
+        if (!buildingConfig.uploadedFile) return;
+        setAnalyzing(true);
+        setVerdict(null);
+        setAnalyzeError(null);
+        try {
+            const result = await analyzeDocument(buildingConfig.uploadedFile);
+            setVerdict(result.verdict);
+        } catch (err: any) {
+            setAnalyzeError(err.message ?? "Analysis failed");
+        } finally {
+            setAnalyzing(false);
+        }
     };
 
     return (
@@ -68,6 +142,49 @@ export function LeftSidebar({
 
             {mode === "build" && (
                 <div className="form">
+                    {/* ---- Template browser ---- */}
+                    <div className="template-section">
+                        <div className="template-header">
+                            <Search size={14} />
+                            <span>Saved Templates</span>
+                            <button className="refresh-btn" onClick={loadTemplates} title="Refresh">
+                                ↻
+                            </button>
+                        </div>
+
+                        {templatesLoading && (
+                            <div className="template-loading">
+                                <Loader2 size={14} className="spin" /> Loading…
+                            </div>
+                        )}
+
+                        {templatesError && (
+                            <div className="template-error">{templatesError}</div>
+                        )}
+
+                        {!templatesLoading && !templatesError && templates.length === 0 && (
+                            <div className="template-empty">No templates yet</div>
+                        )}
+
+                        {!templatesLoading && templates.length > 0 && (
+                            <div className="template-list">
+                                {templates.map((tpl) => (
+                                    <div
+                                        key={tpl.id}
+                                        className={`template-card ${selectedTemplateId === tpl.id ? "selected" : ""}`}
+                                        onClick={() => applyTemplate(tpl)}
+                                    >
+                                        <div className="template-name">{tpl.name}</div>
+                                        <div className="template-meta">
+                                            {tpl.type} · eco {tpl.eco}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+
+                    {/* ---- Building config form ---- */}
                     <label>
                         Type
                         <select
@@ -78,6 +195,8 @@ export function LeftSidebar({
                             <option value="commercial">Commercial</option>
                             <option value="office">Office</option>
                             <option value="industrial">Industrial</option>
+                            <option value="hospital">Hospital</option>
+                            <option value="municipality">Municipality</option>
                         </select>
                     </label>
 
@@ -182,15 +301,20 @@ export function LeftSidebar({
                         Night lights
                     </label>
 
+                    {/* ---- File upload ---- */}
                     <div className="file-upload">
                         <label className="file-label">
                             <Upload size={14} />
-                            <span>Upload Blueprint/Model</span>
+                            <span>Upload Blueprint / PDF</span>
                             <input
                                 type="file"
+                                accept=".pdf,.glb,.gltf,.obj,.fbx,.png,.jpg,.jpeg"
                                 onChange={(e) => {
                                     const file = e.target.files?.[0] || null;
                                     update("uploadedFile", file);
+                                    // Reset previous analysis when a new file is picked
+                                    setVerdict(null);
+                                    setAnalyzeError(null);
                                 }}
                             />
                         </label>
@@ -203,11 +327,42 @@ export function LeftSidebar({
                                 </span>
                                 <button
                                     className="clear-file"
-                                    onClick={() => update("uploadedFile", null)}
+                                    onClick={() => {
+                                        update("uploadedFile", null);
+                                        setVerdict(null);
+                                        setAnalyzeError(null);
+                                    }}
                                 >
                                     <X size={14} />
                                 </button>
                             </div>
+                        )}
+
+                        {/* Analyze button — always available when a file is uploaded */}
+                        {buildingConfig.uploadedFile && (
+                            <button
+                                className="btn analyze-btn"
+                                onClick={handleAnalyze}
+                                disabled={analyzing}
+                            >
+                                {analyzing ? (
+                                    <><Loader2 size={14} className="spin" /> Analyzing…</>
+                                ) : (
+                                    <><Search size={14} /> Analyze with AI</>
+                                )}
+                            </button>
+                        )}
+
+                        {/* AI Verdict panel */}
+                        {verdict && (
+                            <div className="ai-verdict">
+                                <div className="ai-verdict-title">AI Analysis</div>
+                                <div className="ai-verdict-text">{verdict}</div>
+                            </div>
+                        )}
+
+                        {analyzeError && (
+                            <div className="template-error">{analyzeError}</div>
                         )}
                     </div>
 
@@ -215,6 +370,32 @@ export function LeftSidebar({
                         <div>Total height: {totalHeight.toFixed(1)} m</div>
                         <div>Area: {area.toFixed(0)} m²</div>
                         <div>Volume: {volume.toFixed(0)} m³</div>
+                    </div>
+
+                    {/* ---- Save as template ---- */}
+                    <div className="save-template">
+                        <input
+                            type="text"
+                            placeholder="Template name…"
+                            value={saveName}
+                            onChange={(e) => setSaveName(e.target.value)}
+                        />
+                        <button
+                            className="btn save-template-btn"
+                            onClick={handleSave}
+                            disabled={saving || !saveName.trim()}
+                        >
+                            {saving ? (
+                                <><Loader2 size={14} className="spin" /> Saving…</>
+                            ) : (
+                                <><Save size={14} /> Save Template</>
+                            )}
+                        </button>
+                        {saveMsg && (
+                            <div className={`save-msg ${saveMsg.startsWith("Error") ? "error" : ""}`}>
+                                {saveMsg}
+                            </div>
+                        )}
                     </div>
                 </div>
             )}
@@ -248,9 +429,6 @@ export function LeftSidebar({
                     </div>
                 </div>
             )}
-
-
-
 
             <button className="btn ghost" onClick={clearAll}>
                 <Trash2 size={18} />
