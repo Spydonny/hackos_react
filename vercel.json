@@ -1,0 +1,8 @@
+{
+    "rewrites": [
+        {
+            "source": "/api/(.*)",
+            "destination": "https://erp-osk.vercel.app/api/$1"
+        }
+    ]
+}
