@@ -14,9 +14,8 @@ import {
   Cesium3DTileset,
   Cesium3DTileStyle,
   sampleTerrainMostDetailed,
-  GeoJsonDataSource,
+  CustomDataSource,
   ColorMaterialProperty,
-  PolylineGlowMaterialProperty,
 } from "cesium";
 
 import "./App.css";
@@ -82,7 +81,7 @@ export default function App() {
   });
 
   const [ecoMetric, setEcoMetric] = useState<"air" | "traffic">("air");
-  const ecoDataSourceRef = useRef<GeoJsonDataSource | null>(null);
+  const ecoDataSourceRef = useRef<CustomDataSource | null>(null);
 
 
   useEffect(() => {
@@ -113,7 +112,7 @@ export default function App() {
         ecoDataSourceRef.current = null;
       }
     }
-  }, [mode]);
+  }, [mode, ecoMetric]);
 
   useEffect(() => {
     const tileset = tilesetRef.current;
@@ -123,7 +122,7 @@ export default function App() {
       tileset.style = new Cesium3DTileStyle({
         color: {
           conditions: [
-            ["true", "color('#1f2937', 0.7)"], // Neutral dark grey for Eco Mode
+            ["true", "color('#5600bfff')"], // Neutral dark grey for Eco Mode
           ],
         },
       });
@@ -134,7 +133,7 @@ export default function App() {
             ["${feature['building']} === 'apartments'", "color('#eab308',0.9)"],
             ["${feature['building']} === 'commercial'", "color('#60a5fa',0.9)"],
             ["Number(${feature['building:levels']}) >= 10", "color('#ef4444',0.9)"],
-            ["true", "color('#e5e7eb',0.9)"],
+            ["true", "color('#5600bfff')"],
           ],
         },
       });
@@ -146,114 +145,320 @@ export default function App() {
     const viewer = viewerRef.current;
     if (!viewer) return;
 
+    viewer.entities.removeAll();
+
     if (ecoDataSourceRef.current) {
       viewer.dataSources.remove(ecoDataSourceRef.current);
+      ecoDataSourceRef.current = null;
     }
 
-    const dataSource = await GeoJsonDataSource.load(
-      "/data/oskemen_for_cesium_opt.geojson",
-      { clampToGround: true }
-    );
-
-    ecoDataSourceRef.current = dataSource;
+    const dataSource = new CustomDataSource("eco");
     viewer.dataSources.add(dataSource);
+    ecoDataSourceRef.current = dataSource;
 
-    const entities = dataSource.entities.values;
+    // Максимум хаоса: север чуть грязнее + много слоёв шума разного масштаба
+    if (ecoMetric === "air") {
+      const heightM = 25;
+      const cell = 0.00115;
+      const lonMin = 82.52;
+      const lonMax = 82.72;
+      const latMin = 49.88;
+      const latMax = 50.02;
+      const latSpan = latMax - latMin;
 
-    entities.forEach((entity) => {
-      const props = entity.properties?.getValue();
-      const type = props?.type;
+      const threeColors = [
+        Color.fromCssColorString("#22c55e").withAlpha(0.52),
+        Color.fromCssColorString("#eab308").withAlpha(0.52),
+        Color.fromCssColorString("#ef4444").withAlpha(0.52),
+      ];
 
-      const air = props?.air_index ?? 0;
-      const traffic = props?.traffic_index ?? 0;
+      const chaos = (xi: number, yj: number) => {
+        const x = xi * 0.08;
+        const y = yj * 0.08;
+        const a = Math.sin(x) * Math.cos(y * 1.7);
+        const b = Math.sin((x + 11) * 2.3) * Math.cos((y + 7) * 1.1);
+        const c = Math.sin((x * 0.4 + y * 0.6) * 3.1);
+        const d = Math.cos((x * 1.3 - y * 0.9) * 2.7);
+        const e = Math.sin(x * 5.2 + y * 4.1) * 0.5;
+        const f = Math.cos((xi * 0.15 + yj * 0.22) * Math.PI);
+        return (a + b + c + d + e + f) / 6;
+      };
 
-      // --- AIR ZONES ---
-      if (type === "air" && entity.polygon) {
-        const color = getAirColor(air);
+      for (let j = 0; ; j++) {
+        const y0 = latMin + j * cell;
+        if (y0 >= latMax) break;
+        const yCenter = y0 + cell * 0.5;
+        const tBase = (yCenter - latMin) / latSpan;
 
-        entity.polygon.material = new ColorMaterialProperty(color);
-        entity.polygon.outline = new ConstantProperty(false);
-        entity.polygon.height = new ConstantProperty(0);
-        entity.polygon.extrudedHeight = new ConstantProperty(0);
-      }
+        for (let i = 0; ; i++) {
+          const x0 = lonMin + i * cell;
+          if (x0 >= lonMax) break;
 
+          const n = chaos(i, j);
+          const bump = 0.07 * Math.sin(i * 0.2 + j * 0.17) * Math.cos((i - j) * 0.1);
+          const t = Math.max(0, Math.min(1, tBase * 0.25 + 0.5 + n * 0.55 + bump));
+          const colorIndex = t < 0.33 ? 0 : t < 0.66 ? 1 : 2;
+          const color = threeColors[colorIndex];
 
-      // --- ROADS AS LINES ---
-      if (type === "road") {
-        // If already polyline
-        if (entity.polyline) {
-          const { color, width } = getTrafficStyle(traffic);
-
-          entity.polyline.material = new PolylineGlowMaterialProperty({
-            glowPower: 0.2,
-            color: color,
+          const flat = [
+            x0, y0,
+            x0 + cell, y0,
+            x0 + cell, y0 + cell,
+            x0, y0 + cell,
+            x0, y0,
+          ];
+          const flatWithHeight = flat.flatMap((v, idx) =>
+            idx % 2 === 1 ? [v, heightM] : [v]
+          );
+          dataSource.entities.add({
+            polygon: {
+              hierarchy: Cartesian3.fromDegreesArrayHeights(flatWithHeight),
+              material: color,
+              outline: false,
+              fill: true,
+            },
           });
-
-          entity.polyline.width = new ConstantProperty(width);
-          entity.polyline.clampToGround = new ConstantProperty(true);
         }
+      }
+    }
 
-        // If road is polygon → convert to line
-        if (entity.polygon) {
-          const hierarchy = entity.polygon.hierarchy?.getValue();
-          if (hierarchy) {
-            const { color, width } = getTrafficStyle(traffic);
+    // Трафик: реальные дороги из OSM (Overpass) или fallback — изолинии по сетке
+    if (ecoMetric === "traffic") {
+      const lonMin = 82.52;
+      const lonMax = 82.72;
+      const latMin = 49.88;
+      const latMax = 50.02;
+      const lonC = 82.614;
+      const latC = 49.948;
 
-            viewer.entities.add({
+      const trafficColor = (t: number) =>
+        t < 0.4
+          ? Color.fromCssColorString("#22c55e").withAlpha(0.85)
+          : t < 0.78
+            ? Color.fromCssColorString("#eab308").withAlpha(0.85)
+            : Color.fromCssColorString("#ef4444").withAlpha(0.85);
+
+      let useOsmRoads = false;
+      try {
+        const overpassQuery = `[out:json][timeout:25];
+(way["highway"](${latMin},${lonMin},${latMax},${lonMax}););
+out geom;`;
+        const res = await fetch("https://overpass-api.de/api/interpreter", {
+          method: "POST",
+          body: overpassQuery,
+          headers: { "Content-Type": "text/plain" },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const ways = (data.elements || []).filter((e: { type: string }) => e.type === "way");
+          for (const way of ways) {
+            const geom = (way as { geometry?: { lat: number; lon: number }[] }).geometry;
+            if (!geom || geom.length < 2) continue;
+            const flat = geom.flatMap((p: { lat: number; lon: number }) => [p.lon, p.lat]);
+            const avgLon = geom.reduce((s: number, p: { lon: number }) => s + p.lon, 0) / geom.length;
+            const avgLat = geom.reduce((s: number, p: { lat: number }) => s + p.lat, 0) / geom.length;
+            const dist = Math.sqrt((avgLon - lonC) ** 2 + (avgLat - latC) ** 2);
+            const tags = (way as { tags?: { highway?: string } }).tags || {};
+            const hw = (tags.highway || "").toLowerCase();
+            const roadBonus =
+              hw === "motorway" || hw === "trunk" ? 0.35 : hw === "primary" ? 0.25 : hw === "secondary" ? 0.15 : 0;
+            const wayId = (way as { id?: number }).id || 0;
+            const bump =
+              0.18 * Math.sin(wayId * 0.7) +
+              0.12 * Math.cos(avgLon * 80) * Math.sin(avgLat * 60) +
+              0.08 * Math.sin(flat.length * 0.3 + wayId * 0.2);
+            const t = Math.max(0, Math.min(1, 1 - dist / 0.08 + roadBonus + bump));
+            dataSource.entities.add({
               polyline: {
-                positions: hierarchy.positions,
-                width: width,
-                material: new PolylineGlowMaterialProperty({
-                  glowPower: 0.2,
-                  color: color,
-                }),
+                positions: Cartesian3.fromDegreesArray(flat),
+                width: hw === "motorway" || hw === "trunk" ? 4 : hw === "primary" ? 3 : 2,
+                material: trafficColor(t),
                 clampToGround: true,
               },
             });
+          }
+          useOsmRoads = dataSource.entities.values.length > 0;
+        }
+      } catch (_) {
+        useOsmRoads = false;
+      }
 
-            // hide polygon
-            entity.polygon.show = new ConstantProperty(false);
+      if (!useOsmRoads) {
+      const cell = 0.002;
+      const bridgeLat = 49.94;
+
+      const ni = Math.ceil((lonMax - lonMin) / cell);
+      const nj = Math.ceil((latMax - latMin) / cell);
+      const grid: number[][] = [];
+      for (let j = 0; j <= nj; j++) {
+        const row: number[] = [];
+        for (let i = 0; i <= ni; i++) {
+          const lon = lonMin + i * cell;
+          const lat = latMin + j * cell;
+          const dist = Math.sqrt((lon - lonC) ** 2 + (lat - latC) ** 2);
+          const centerFactor = Math.max(0, 1 - dist / 0.08);
+          const bridgeFactor = 0.6 * Math.exp(-((lat - bridgeLat) ** 2) / 0.00015);
+          const noise =
+            0.08 * Math.sin(i * 0.04) * Math.cos(j * 0.04) +
+            0.11 * Math.sin((i + 7) * 0.09) * Math.cos((j + 3) * 0.07) +
+            0.06 * Math.cos(i * 0.15 + j * 0.12);
+          row.push(Math.max(0, Math.min(1, centerFactor + bridgeFactor + noise)));
+        }
+        grid.push(row);
+      }
+
+      const lerp = (a: number[], b: number[], t: number) => [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+      ];
+      const isoLevels = [0.25, 0.5, 0.75];
+      const isoColors = [
+        Color.fromCssColorString("#22c55e").withAlpha(0.9),
+        Color.fromCssColorString("#eab308").withAlpha(0.9),
+        Color.fromCssColorString("#ef4444").withAlpha(0.9),
+      ];
+
+      for (let li = 0; li < isoLevels.length; li++) {
+        const L = isoLevels[li];
+        const segments: { a: number[]; b: number[] }[] = [];
+        const edgeEnds = [
+          (i: number, j: number) => [lonMin + i * cell, latMin + j * cell],
+          (i: number, j: number) => [lonMin + (i + 1) * cell, latMin + j * cell],
+          (i: number, j: number) => [lonMin + (i + 1) * cell, latMin + (j + 1) * cell],
+          (i: number, j: number) => [lonMin + i * cell, latMin + (j + 1) * cell],
+        ];
+        const edgeVals = (i: number, j: number) => [
+          [grid[j][i], grid[j][i + 1]],
+          [grid[j][i + 1], grid[j + 1][i + 1]],
+          [grid[j + 1][i + 1], grid[j + 1][i]],
+          [grid[j + 1][i], grid[j][i]],
+        ];
+
+        for (let j = 0; j < nj; j++) {
+          for (let i = 0; i < ni; i++) {
+            const v00 = grid[j][i];
+            const v10 = grid[j][i + 1];
+            const v11 = grid[j + 1][i + 1];
+            const v01 = grid[j + 1][i];
+            const c0 = v00 >= L ? 1 : 0;
+            const c1 = v10 >= L ? 1 : 0;
+            const c2 = v11 >= L ? 1 : 0;
+            const c3 = v01 >= L ? 1 : 0;
+            const idx = c0 + c1 * 2 + c2 * 4 + c3 * 8;
+            const pts: number[][] = [];
+            const addEdge = (edge: number) => {
+              const [vA, vB] = edgeVals(i, j)[edge];
+              const t = Math.abs(vB - vA) < 1e-9 ? 0.5 : (L - vA) / (vB - vA);
+              const p = lerp(edgeEnds[edge](i, j), edgeEnds[(edge + 1) % 4](i, j), t);
+              pts.push(p);
+            };
+            if (idx === 1) { addEdge(0); addEdge(3); }
+            else if (idx === 2) { addEdge(0); addEdge(1); }
+            else if (idx === 3) { addEdge(1); addEdge(3); }
+            else if (idx === 4) { addEdge(1); addEdge(2); }
+            else if (idx === 5) { addEdge(0); addEdge(1); addEdge(2); addEdge(3); }
+            else if (idx === 6) { addEdge(0); addEdge(2); }
+            else if (idx === 7) { addEdge(2); addEdge(3); }
+            else if (idx === 8) { addEdge(2); addEdge(3); }
+            else if (idx === 9) { addEdge(0); addEdge(2); }
+            else if (idx === 10) { addEdge(1); addEdge(3); addEdge(0); addEdge(2); }
+            else if (idx === 11) { addEdge(1); addEdge(2); }
+            else if (idx === 12) { addEdge(1); addEdge(3); }
+            else if (idx === 13) { addEdge(0); addEdge(1); }
+            else if (idx === 14) { addEdge(0); addEdge(3); }
+            for (let k = 0; k < pts.length; k += 2) {
+              if (pts[k + 1]) segments.push({ a: pts[k], b: pts[k + 1] });
+            }
+          }
+        }
+
+        const key = (p: number[]) => `${p[0].toFixed(6)},${p[1].toFixed(6)}`;
+        const segKey = (s: { a: number[]; b: number[] }) => key(s.a) + "|" + key(s.b);
+        const eps = 1e-8;
+        const extend = (from: number[], usedSegs: Set<string>): number[] => {
+          const out: number[] = [];
+          let cur = from;
+          for (;;) {
+            let found = false;
+            for (const s of segments) {
+              if (usedSegs.has(segKey(s))) continue;
+              const matchA = Math.abs(cur[0] - s.a[0]) < eps && Math.abs(cur[1] - s.a[1]) < eps;
+              const matchB = Math.abs(cur[0] - s.b[0]) < eps && Math.abs(cur[1] - s.b[1]) < eps;
+              const next = matchA ? s.b : matchB ? s.a : null;
+              if (next) {
+                usedSegs.add(segKey(s));
+                cur = next;
+                out.push(next[0], next[1]);
+                found = true;
+                break;
+              }
+            }
+            if (!found) break;
+          }
+          return out;
+        };
+
+        const reverseFlat = (arr: number[]) => {
+          const out: number[] = [];
+          for (let i = arr.length - 2; i >= 0; i -= 2) out.push(arr[i], arr[i + 1]);
+          return out;
+        };
+        const usedSegs = new Set<string>();
+        for (const s of segments) {
+          if (usedSegs.has(segKey(s))) continue;
+          const fwd = extend(s.a, usedSegs);
+          usedSegs.delete(segKey(s));
+          const bwd = extend(s.b, usedSegs);
+          usedSegs.add(segKey(s));
+          const flat = [...s.a, ...fwd, ...reverseFlat(bwd)];
+          if (flat.length >= 4) {
+            const positions = Cartesian3.fromDegreesArray(flat);
+            dataSource.entities.add({
+              polyline: {
+                positions,
+                width: 2.5,
+                material: isoColors[li],
+                clampToGround: true,
+              },
+            });
           }
         }
       }
-    });
+      }
+    }
 
-
-    setStats((s) => ({ ...s, ecoZones: entities.length }));
+    const count = dataSource.entities.values.length;
+    viewer.scene.requestRender();
+    setStats((s) => ({ ...s, ecoZones: count }));
   };
 
   const getAirColor = (value: number) => {
     const v = Math.max(0, Math.min(1, value));
 
-    if (v < 0.2) return Color.fromCssColorString("#22c55e").withAlpha(0.15);
-    if (v < 0.4) return Color.fromCssColorString("#84cc16").withAlpha(0.2);
-    if (v < 0.6) return Color.fromCssColorString("#eab308").withAlpha(0.25);
-    if (v < 0.8) return Color.fromCssColorString("#f97316").withAlpha(0.3);
+    if (v < 0.2) return Color.fromCssColorString("#22c55e").withAlpha(0.92);
+    if (v < 0.4) return Color.fromCssColorString("#84cc16").withAlpha(0.92);
+    if (v < 0.6) return Color.fromCssColorString("#eab308").withAlpha(0.92);
+    if (v < 0.8) return Color.fromCssColorString("#f97316").withAlpha(0.92);
 
-    return Color.fromCssColorString("#ef4444").withAlpha(0.35);
+    return Color.fromCssColorString("#ef4444").withAlpha(0.92);
   };
 
   const getTrafficStyle = (value: number) => {
     const v = Math.max(0, Math.min(1, value));
 
-    let color;
     let width;
 
     if (v < 0.3) {
-      color = Color.LIME;
       width = 2;
     } else if (v < 0.6) {
-      color = Color.YELLOW;
       width = 4;
     } else if (v < 0.8) {
-      color = Color.ORANGE;
       width = 6;
     } else {
-      color = Color.RED;
       width = 8;
     }
 
-    return { color, width };
+    return { width };
   };
 
 
