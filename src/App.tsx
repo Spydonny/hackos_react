@@ -15,7 +15,6 @@ import {
   Cesium3DTileStyle,
   sampleTerrainMostDetailed,
   CustomDataSource,
-  ColorMaterialProperty,
 } from "cesium";
 
 import "./App.css";
@@ -23,7 +22,6 @@ import { LeftSidebar } from "./components/LeftSidebar";
 import RightSidebar from "./components/RightSidebar";
 import "cesium/Build/Cesium/Widgets/widgets.css";
 
-import { ConstantProperty } from "cesium";
 import type { BuildingConfig } from "./types/building";
 import { placeBuilding } from "./api/buildingApi";
 import type { PlaceBuildingResponse } from "./api/buildingApi";
@@ -431,36 +429,6 @@ out geom;`;
     viewer.scene.requestRender();
     setStats((s) => ({ ...s, ecoZones: count }));
   };
-
-  const getAirColor = (value: number) => {
-    const v = Math.max(0, Math.min(1, value));
-
-    if (v < 0.2) return Color.fromCssColorString("#22c55e").withAlpha(0.92);
-    if (v < 0.4) return Color.fromCssColorString("#84cc16").withAlpha(0.92);
-    if (v < 0.6) return Color.fromCssColorString("#eab308").withAlpha(0.92);
-    if (v < 0.8) return Color.fromCssColorString("#f97316").withAlpha(0.92);
-
-    return Color.fromCssColorString("#ef4444").withAlpha(0.92);
-  };
-
-  const getTrafficStyle = (value: number) => {
-    const v = Math.max(0, Math.min(1, value));
-
-    let width;
-
-    if (v < 0.3) {
-      width = 2;
-    } else if (v < 0.6) {
-      width = 4;
-    } else if (v < 0.8) {
-      width = 6;
-    } else {
-      width = 8;
-    }
-
-    return { width };
-  };
-
 
 
   useEffect(() => {
